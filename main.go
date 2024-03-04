@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/gorcon/rcon"
 	"io/ioutil"
 	"log"
 	"os"
@@ -23,18 +24,44 @@ func init() {
 	os.Setenv("TZ", "Asia/Shanghai")
 	time.LoadLocation("Asia/Shanghai")
 }
+func getUserNumber() (userNumber int) {
+	conn, err := rcon.Dial("192.168.31.12:25575", "Qwer.123456")
+	if err != nil {
+		logger.Println(err)
+		return 0
+	}
+	defer conn.Close()
+
+	response, err := conn.Execute("ShowPlayers")
+	if err != nil {
+		logger.Println(err)
+		return 0
+	}
+	records := strings.Split(response, "\n")
+
+	// 数据条数即为records切片的长度
+	dataCount := len(records)
+	return dataCount - 2
+}
 
 func main() {
+	const checkInterval = 10 * time.Minute
 	for {
-		logger.Println("开始检查游戏服务器是否有更新...")
-		if checkForUpdate() {
-			logger.Println("检测到更新，开始执行更新过程...")
-			executeUpdate()
+		userNumber := getUserNumber()
+		if userNumber > 0 {
+			logger.Printf("玩家在线 %d, 跳过更新...", userNumber)
 		} else {
-			logger.Println("未检测到更新，10分钟后再次检查...")
-			ensureServerRunning() // 不使用goroutine，直接在主线程中检查和启动服务器
+			logger.Println("开始检查游戏服务器是否有更新...")
+			if checkForUpdate() {
+				logger.Println("检测到更新，开始执行更新过程...")
+				executeUpdate()
+			} else {
+				logger.Println("未检测到更新，10分钟后再次检查...")
+				ensureServerRunning()
+			}
 		}
-		time.Sleep(10 * time.Minute)
+
+		time.Sleep(checkInterval)
 	}
 }
 
@@ -94,13 +121,19 @@ func writeLastChangeInfo(info string) {
 
 func executeUpdate() {
 	logger.Println("正在停止游戏服务器...")
-	output, _ := executeCommand("ps -aux | grep " + serverProcessName + " | awk '{print $2}'")
+	output, _ := executeCommand("pgrep " + serverProcessName) // 使用 pgrep 查找进程ID
 	pids := strings.Split(output, "\n")
-	for _, pid := range pids {
-		if pid != "" {
-			_, killErr := executeCommand("kill -9 " + pid)
-			if killErr != nil {
-				logger.Printf("尝试杀死进程 %s 时发生错误: %v", pid, killErr)
+	if len(pids) == 0 || (len(pids) == 1 && pids[0] == "") {
+		logger.Println("未找到游戏服务器进程，无需杀死。")
+	} else {
+		for _, pid := range pids {
+			if pid != "" {
+				_, killErr := executeCommand("sudo kill -9 " + pid) // 使用sudo提高权限
+				if killErr != nil {
+					logger.Printf("尝试杀死进程 %s 时发生错误: %v", pid, killErr)
+				} else {
+					logger.Printf("进程 %s 已被成功杀死。", pid)
+				}
 			}
 		}
 	}
@@ -109,12 +142,14 @@ func executeUpdate() {
 	_, updateErr := executeCommand(updateCmd)
 	if updateErr != nil {
 		logger.Printf("更新游戏服务器时发生错误: %v", updateErr)
+	} else {
+		logger.Println("游戏服务器更新成功。")
 	}
 	logger.Println("正在重启游戏服务器...")
 	_, restartErr := executeCommand(serverStartCmd)
 	if restartErr != nil {
 		logger.Printf("重启游戏服务器时发生错误: %v", restartErr)
 	} else {
-		logger.Println("游戏服务器更新并重启成功。")
+		logger.Println("游戏服务器重启成功。")
 	}
 }
